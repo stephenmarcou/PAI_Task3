@@ -3,7 +3,8 @@ import numpy as np
 from scipy.optimize import fmin_l_bfgs_b
 # import additional ...
 from sklearn.gaussian_process import GaussianProcessRegressor
-from sklearn.gaussian_process.kernels import RBF, ConstantKernel as C, Matern, DotProduct
+from sklearn.gaussian_process.kernels import RBF, ConstantKernel as C, Matern, DotProduct, WhiteKernel
+from scipy.stats import norm
 
 
 # global variables
@@ -18,7 +19,7 @@ class BOAlgorithm():
         """Initializes the algorithm with a parameter configuration."""
         # TODO: Define all relevant class members for your BO algorithm here.
         # Define the kernels for v(x)
-        linear_kernel = C(1.0) * DotProduct()
+        linear_kernel = C(1.0) * DotProduct() + WhiteKernel(0.0001)
         matern_kernel = Matern(nu=2.5)
 
         kernel_v = linear_kernel + matern_kernel 
@@ -28,19 +29,15 @@ class BOAlgorithm():
         
 
         # Define the GP model
-        self.vfunc = GaussianProcessRegressor(kernel=kernel_v, n_restarts_optimizer=10, alpha=0.0001**2, normalize_y=True)
+        self.vfunc = GaussianProcessRegressor(kernel=kernel_v, alpha=0.0001**2, n_restarts_optimizer=10, normalize_y=True)
 
-        kernel_gp = C(0.5, constant_value_bounds="fixed")*RBF(length_scale=10, length_scale_bounds="fixed")
-        
-        #kernel_gp = Matern(nu=2.5)
-        
-        
+        kernel_gp = C(1)*RBF(length_scale=10) + WhiteKernel(0.15)
         self.GP = GaussianProcessRegressor(kernel_gp, alpha=0.15**2, normalize_y=True)
 
         
-        self.x = np.array([])
-        self.v_val = np.array([])
-        self.f_val = np.array([])
+        self.x = []
+        self.v_val = []
+        self.f_val = []
         
 
     def recommend_next(self):
@@ -114,27 +111,36 @@ class BOAlgorithm():
         mu, sigma = self.GP.predict(x, return_std=True)
         
         # Predict the mean for v(x)
-        mu_v, _ = self.vfunc.predict(x, return_std=True)
+        mu_v, std_v = self.vfunc.predict(x, return_std=True)
         
-        mu_v += 4
         
         # Ensure that sigma is not zero to avoid numerical issues
         sigma = np.maximum(sigma, 1e-9)
+        std_v = np.maximum(std_v, 1e-9)
         
-        
+        # probability being under safety treshold
+        prob = norm.cdf((SAFETY_THRESHOLD - mu_v) / std_v)
 
-        beta = 2
+        beta = 0.1 
         
         # Calculate the UCB score
         ucb_value = mu + beta * sigma
         
         # Lagrangian penalty for constraint violation
-        lambda_penalty = mu_v/2
+        lambda_penalty = 10  #mu_v/2
+
         penalty = lambda_penalty * np.maximum(mu_v - SAFETY_THRESHOLD, 0)
+
+        # someone told me that one of the papers talked about multiplying the 
+        # probability here
+        af_value = ucb_value * prob - penalty
         
-        af_value = ucb_value - penalty
+
         
-        return af_value
+        return af_value.flatten()
+        
+
+
         
         
         
@@ -157,22 +163,22 @@ class BOAlgorithm():
         """
         # TODO: Add the observed data {x, f, v} to your model.
         
-        self.x = np.append(self.x, x)
-        self.f_val = np.append(self.f_val, f)
-        self.v_val = np.append(self.v_val, v)
+        self.x.append(x)
+        self.f_val.append(f)
+        self.v_val.append(v)
+        
+
         
     
-        x_list = self.x.reshape(-1,1)
-        # print(self.f_val.shape)
-        # print("hellooo")
-        # print(self.x.shape)
+        x_list = np.array(self.x).reshape(-1,1)
+        f_val = np.array(self.f_val).reshape(-1,1)
+        v_val = np.array(self.v_val).reshape(-1,1)
+        
 
-        self.GP.fit(x_list,self.f_val)
-        self.vfunc.fit(x_list,self.v_val)
         
-        
-        
-        
+        self.GP.fit(x_list,f_val)
+        self.vfunc.fit(x_list,v_val)
+
        # raise NotImplementedError
 
     def get_optimal_solution(self):
@@ -187,36 +193,19 @@ class BOAlgorithm():
         # TODO: Return your predicted safe optimum of f.
             # Predict f(x) and v(x) for each candidate point
         
-        x_list = self.x.reshape(-1,1)
-        self.GP.fit(x_list, self.f_val)
-        self.vfunc.fit(x_list, self.v_val)
-
-        f_values = self.GP.predict(x_list)
-        v_values = self.vfunc.predict(x_list) 
         
         x_opt = 0
         f_max = -100000
 
         for x,f,v in zip(self.x, self.f_val, self.v_val):
-            if f > f_max and v < -1.96*np.sqrt(0.0001**2/len(self.x)) + SAFETY_THRESHOLD:
+            if f > f_max and v < SAFETY_THRESHOLD:
                 f_max = f
                 x_opt = x
+        # print(f"f_max: {f_max}")
         return x_opt
         
         
-        # x_list = np.linspace(0, 10, 1000000).reshape(-1, 1)  # sample points within the domain
-        # f_values = self.GP.predict(x_list)
-        # v_values = self.vfunc.predict(x_list)
 
-        # # Find the point with the highest f value and safety constraint satisfied
-        # f_max = -np.inf
-        # x_opt = None
-        # for x, f, v in zip(x_list, f_values, v_values):
-        #     if f > f_max and v <= SAFETY_THRESHOLD:
-        #         f_max = f
-        #         x_opt = x.item()  # Return as scalar instead of array
-
-        # return x_opt
                 
             
 
